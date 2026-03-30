@@ -1,0 +1,171 @@
+================================================================================
+                     ANALYTICAL THEORY — FIO LOAD TESTING TOOL
+================================================================================
+
+
+────────────────────────────────────────────────────────────────────────────────
+1. LATENCY ANALYSIS: LOW AVERAGE vs HIGH P99
+────────────────────────────────────────────────────────────────────────────────
+
+Observation:
+    Average latency is low, but the 99th percentile (P99) latency is
+    extremely high.
+
+Interpretation:
+    The majority of I/O operations complete quickly, but a small subset
+    (roughly 1 in 100) takes significantly longer. This is known as
+    "tail latency" — a hidden performance problem that average metrics
+    completely mask.
+
+    Example: If average latency = 2ms but P99 = 850ms, then 99% of
+    requests look healthy. But in a system handling 1,000 requests/sec,
+    that means ~10 users per second experience an 850ms delay — which
+    translates directly into timeouts and SLA violations.
+
+Common causes:
+    - SSD garbage collection: the drive pauses writes to reclaim blocks,
+      causing bursts of high latency every few minutes
+    - Storage hot spots: one disk sector or shard gets disproportionate
+      I/O traffic, creating a queue backlog
+    - Background operations: snapshotting, compaction, or replication
+      competing with foreground I/O
+    - I/O queue saturation: when iodepth is high and the device is near
+      its limit, new requests wait behind a deep queue
+    - Network jitter: for remote storage (S3, NFS), packet retransmits
+      add unpredictable latency spikes
+
+Conclusion:
+    Average latency is a misleading metric for evaluating storage systems
+    under real workloads. P99 (and P99.9) are the metrics that matter for
+    production readiness. A storage system with low average but high P99 is
+    not suitable for latency-sensitive applications such as OLTP databases,
+    financial transaction systems, or real-time APIs. Always report and
+    evaluate tail latency alongside averages.
+
+
+────────────────────────────────────────────────────────────────────────────────
+2. NETWORK BOTTLENECK ANALYSIS (iperf3 METRICS)
+────────────────────────────────────────────────────────────────────────────────
+
+Context:
+    When testing storage over a network (S3, NFS, iSCSI, or any
+    remote protocol), the network link itself can be the bottleneck —
+    not the storage device. If the network is saturated, fio results
+    will look like poor storage performance when the disk is actually
+    fine. iperf3 isolates and measures the network layer independently.
+
+Key metrics to include in the report:
+
+    Throughput (Mbps / Gbps)
+        The raw bandwidth the network can sustain. Compare this directly
+        against fio's measured storage throughput. If iperf3 throughput
+        ≈ fio throughput, the network is the ceiling — not the disk.
+        Red flag: iperf3 bandwidth near or below the storage device's
+        rated throughput.
+
+    Retransmits
+        The count of TCP packets that had to be re-sent due to loss or
+        corruption. Any retransmits under normal conditions indicate
+        network instability. Each retransmit adds a full RTT of latency,
+        directly inflating P99. Red flag: retransmits > 0.1% of total
+        packets.
+
+    RTT — Round-Trip Time (ms)
+        The baseline network latency between client and storage server.
+        If RTT is high (e.g., 50ms on a LAN that should be <1ms), every
+        storage operation inherits that overhead. Cross-referencing with
+        fio: if fio P99 ≈ RTT × some multiplier, the latency is
+        network-origin, not storage-origin.
+
+    Jitter (ms)
+        The variation in packet arrival time. High jitter means
+        inconsistent network delivery, which produces erratic latency
+        distributions — exactly the pattern of low average + high P99.
+        Critical for streaming workloads that require steady throughput.
+
+Cross-reference method:
+    Run iperf3 and fio sequentially against the same target host.
+    - If iperf3 shows degraded metrics AND fio shows high latency →
+      network is the primary bottleneck. Fix the network first.
+    - If iperf3 is clean (high bandwidth, zero retransmits, low RTT)
+      AND fio still shows high latency → the bottleneck is in the
+      storage layer (disk, controller, or storage software stack).
+
+This isolation step is essential before drawing any conclusions from
+fio results alone.
+
+
+────────────────────────────────────────────────────────────────────────────────
+3. DATA AGGREGATION FOR A 24-HOUR SOAK TEST
+────────────────────────────────────────────────────────────────────────────────
+
+What is a soak test?
+    A soak test runs the system under continuous, realistic load for an
+    extended period (typically 24–72 hours). The goal is not peak
+    performance — it is sustained performance and stability. It reveals
+    issues that only emerge over time: memory leaks, thermal throttling,
+    SSD write cliff degradation, and gradual queue buildup.
+
+The aggregation challenge:
+    A 24-hour fio run at per-second granularity produces 86,400 data
+    points per metric. Raw per-second data is too noisy to interpret
+    and too large to store efficiently. The solution is time-bucketed
+    aggregation.
+
+Recommended approach:
+
+    Step 1 — Windowed collection
+        Run fio in a loop of short windows (e.g., 5 minutes each).
+        Each window produces one JSON output file, timestamped:
+            results/2026-03-30T09:00:00_window.json
+            results/2026-03-30T09:05:00_window.json
+            ...
+        This gives 288 files for a 24-hour test — manageable and
+        recoverable (if the run crashes at hour 20, you keep 20h of data).
+
+    Step 2 — Per-bucket metrics to extract
+        For each 5-minute window, record:
+            - Timestamp (window start)
+            - Read/Write throughput (MiB/s)
+            - Read/Write IOPS
+            - Latency: avg, P50, P95, P99 (ms)
+            - Error count (fio "error" field in job output)
+
+    Step 3 — End-of-run aggregation
+        Load all window files and compute across the full 24h:
+            - Overall avg / min / max for throughput and IOPS
+            - Worst P99 latency observed (the true worst-case)
+            - Number of windows where P99 exceeded a threshold
+              (e.g., >50ms = SLA violation count)
+            - Performance trend: did throughput degrade over time?
+              (sign of thermal throttling or write cliff on SSDs)
+
+    Step 4 — Anomaly flagging
+        Flag any window where P99 > 3× the median P99 across all windows.
+        These are outlier periods that need root-cause investigation.
+
+    Step 5 — Visualization and storage
+        - Lightweight: write aggregated rows to a CSV, plot with
+          matplotlib (IOPS over time, P99 over time)
+        - Production-grade: write to InfluxDB or Prometheus, visualize
+          in Grafana with pre-built time-series dashboards
+        - For a 7-day+ test, process windows in a streaming fashion
+          (read one file → update running stats → discard) to avoid
+          loading all data into memory at once
+
+Memory note:
+    288 JSON files × ~10KB each ≈ 2.9MB total. Loading all into memory
+    at once is completely fine for a 24-hour test. For tests longer than
+    one week, switch to streaming aggregation or a time-series database.
+
+Goal:
+    Transform 24 hours of raw fio output into a single report that
+    answers three questions:
+        1. Was performance stable, or did it degrade over time?
+        2. What was the worst-case latency a user could experience?
+        3. How many SLA violations occurred, and when?
+
+
+================================================================================
+                                  END OF DOCUMENT
+================================================================================

@@ -1,10 +1,12 @@
 def parse_metrics(data):
 
     job = data["jobs"][0]
-    read = job["read"]
 
-    throughput_mib = read["bw"] / 1024
-    iops = read["iops"]
+    read = job["read"]
+    write = job["write"]
+
+    throughput_mib = (read["bw"] + write["bw"]) / 1024
+    iops = read["iops"] + write["iops"]
 
     p95_latency_ms = read["clat_ns"]["percentile"]["95.000000"] / 1e6
     p99_latency_ms = read["clat_ns"]["percentile"]["99.000000"] / 1e6

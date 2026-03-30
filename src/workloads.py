@@ -19,6 +19,7 @@ OLTP_WORKLOAD = {
     "runtime": 30,
     "time_based": 1,
 
+    # when group_reporting=1, fio aggregates results across all jobs into the first job entry
     "group_reporting": 1
 }
 
@@ -31,7 +32,7 @@ STREAM_WORKLOAD = {
     # large blocks for throughput
     "bs": "1M",
 
-    "iodepth": 16,
+    "iodepth": 32,
     "numjobs": 1,
 
     "size": "2G",
@@ -43,7 +44,3 @@ STREAM_WORKLOAD = {
 
     "group_reporting": 1
 }
-
-# Effective concurrency = numjobs * iodepth
-# Example: OLTP 4*32=128 outstanding IO ops
-#          Stream 2*16=32 outstanding IO ops
