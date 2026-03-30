@@ -1,21 +1,49 @@
 OLTP_WORKLOAD = {
     "name": "oltp",
-    "rw": "randrw",     #tells fio what kind of operations to perform.
-    "bs": "4k",         # size of each operation
-    "iodepth": 32,  #How many IO operations can be in a flight at the same time per job
+
+    # Random read/write pattern typical for databases
+    "rw": "randrw",
+    "rwmixread": 70,   # 70% reads, 30% writes
+
+    # small database pages
+    "bs": "4k",
+
+    # concurrency parameters
+    "iodepth": 32,
     "numjobs": 4,
+
     "size": "256M",
-    "direct": 1     #when you want real disk performance. bypass RAM speed
+
+    "direct": 1,
+
+    "runtime": 30,
+    "time_based": 1,
+
+    "group_reporting": 1
 }
 
 STREAM_WORKLOAD = {
     "name": "stream",
+
+    # sequential reading like backup or video streaming
     "rw": "read",
+
+    # large blocks for throughput
     "bs": "1M",
+
     "iodepth": 16,
-    "numjobs": 4,
+    "numjobs": 1,
+
     "size": "2G",
-    "direct": 1
+
+    "direct": 1,
+
+    "runtime": 30,
+    "time_based": 1,
+
+    "group_reporting": 1
 }
 
-# Total concurency = numjobs x iodepth
+# Effective concurrency = numjobs * iodepth
+# Example: OLTP 4*32=128 outstanding IO ops
+#          Stream 2*16=32 outstanding IO ops
